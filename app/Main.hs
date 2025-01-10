@@ -44,10 +44,10 @@ bowFromFolder folderPath = do
   pure $ fold bows
 
 spamBow :: IO Bow
-spamBow = bowFromFolder "./data/spam/"
+spamBow = bowFromFolder "./data/train/spam/"
 
 hamBow :: IO Bow
-hamBow = bowFromFolder "./data/ham/"
+hamBow = bowFromFolder "./data/train/ham/"
 
 main :: IO ()
 main = putStrLn "Hello, Haskell!"
