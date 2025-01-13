@@ -1,3 +1,6 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import qualified Data.ByteString as B
@@ -19,14 +22,17 @@ newtype Word' = Word' T.Text
 mkWord :: T.Text -> Word'
 mkWord = Word' . T.toUpper
 
-newtype Bow = Bow
-  {bowToMap :: M.Map Word' Int}
+type Freq = Int
+type Prob = Double
+
+newtype Bow a = Bow
+  {bowToMap :: M.Map Word' a}
   deriving (Show, Read)
 
-emptyBow :: Bow
+emptyBow :: Bow Freq
 emptyBow = Bow M.empty
 
-summaryBow :: Bow -> IO ()
+summaryBow :: Bow Freq -> IO ()
 summaryBow (Bow bow) = do
   forM_
     ( sortBy (compare `on` snd) $
@@ -34,24 +40,28 @@ summaryBow (Bow bow) = do
     )
     $ \(w, f) -> printf "%s -> %d\n" (wordToText w) f
 
-instance Semigroup Bow where
+instance Semigroup (Bow Freq) where
   Bow bow1 <> Bow bow2 = Bow $ M.unionWith (+) bow1 bow2
 
-instance Monoid Bow where
+instance Monoid (Bow Freq) where
   mempty = emptyBow
 
 wordToText :: Word' -> T.Text
 wordToText (Word' t) = t
 
-wordsCount :: Bow -> Int
+wordsCount :: Bow Freq -> Int
 wordsCount (Bow bow) = sum $ map snd $ M.toList bow
 
-wordProbability :: Word' -> Bow -> Double
-wordProbability w bow =
-  fromIntegral n
-    / fromIntegral (wordsCount bow)
+wordProbability :: Word' -> Bow Prob -> Prob
+wordProbability w bow = fromMaybe 0 $ M.lookup w $ bowToMap bow
+
+freqToProb :: Bow Freq -> Bow Prob
+freqToProb bow =
+  Bow $
+    M.map (\x -> fromIntegral x / n) $
+      bowToMap bow
  where
-  n = fromMaybe 0 $ M.lookup w $ bowToMap bow
+  n = fromIntegral $ wordsCount bow
 
 normalizeTextToWords :: T.Text -> [Word']
 normalizeTextToWords =
@@ -61,10 +71,10 @@ normalizeTextToWords =
       ( \w -> if isAlphaNum w then w else ' '
       )
 
-wordToBow :: Word' -> Bow
+wordToBow :: Word' -> Bow Freq
 wordToBow w = Bow $ M.fromList [(w, 1)]
 
-textToBow :: T.Text -> Bow
+textToBow :: T.Text -> Bow Freq
 textToBow = foldMap wordToBow . normalizeTextToWords
 
 seenWord :: SpamModel -> Word' -> Bool
@@ -80,26 +90,26 @@ readFileIfPossible filePath = do
     Right text -> Just text
     Left _ -> Nothing
 
-bowFromFile :: FilePath -> IO (Maybe Bow)
+bowFromFile :: FilePath -> IO (Maybe (Bow Freq))
 bowFromFile filePath = do
   contents <- readFileIfPossible filePath
   return $ textToBow <$> contents
 
-bowFromFolder :: FilePath -> IO Bow
+bowFromFolder :: FilePath -> IO (Bow Freq)
 bowFromFolder folderPath = do
   fileNames <- listDirectory folderPath
   bows <- mapM (bowFromFile . (folderPath <>)) fileNames
   return $ fold $ catMaybes bows
 
 data SpamModel = SpamModel
-  { spamBow :: Bow
-  , hamBow :: Bow
+  { spamBow :: !(Bow Prob)
+  , hamBow :: !(Bow Prob)
   }
 
 spamModel :: IO SpamModel
 spamModel = do
-  spam <- bowFromFolder "./data/train/spam/"
-  ham <- bowFromFolder "./data/train/ham/"
+  spam <- loadBowCSV "./data/spam.csv"
+  ham <- loadBowCSV "./data/ham.csv"
   pure $ SpamModel spam ham
 
 wordProbabilitySpam :: SpamModel -> Word' -> Maybe Double
@@ -132,18 +142,10 @@ textProabilitySpam sm text = pp / (pp + product ips)
   ips = map (1.0 -) ps
   pp = product ps
 
-textProabilityHam :: SpamModel -> T.Text -> Double
-textProabilityHam sm text = pp / (pp + product ips)
- where
-  ws = normalizeTextToWords text
-  ps = mapMaybe (wordProbabilityHam sm) ws
-  ips = map (1.0 -) ps
-  pp = product ps
+classifyText :: SpamModel -> T.Text -> Double
+classifyText = textProabilitySpam
 
-classifyText :: SpamModel -> T.Text -> (Double, Double)
-classifyText sm text = (textProabilitySpam sm text, textProabilityHam sm text)
-
-classifyFile :: SpamModel -> FilePath -> IO (Double, Double)
+classifyFile :: SpamModel -> FilePath -> IO Double
 classifyFile sm filePath = classifyText sm <$> T.readFile filePath
 
 classifyFolder :: SpamModel -> FilePath -> IO ()
@@ -154,5 +156,40 @@ classifyFolder sm folderPath = do
     stats <- classifyFile sm filePath
     printf "%s -> %s\n" filePath (show stats)
 
+dumpBowCsv :: (Show a) => Bow a -> FilePath -> IO ()
+dumpBowCsv bow filePath =
+  writeFile filePath $
+    unlines $
+      map (\(Word' word, value) -> printf "%s,%s" word (show value)) $
+        M.toList $
+          bowToMap bow
+
+loadBowCSV :: (Read a) => FilePath -> IO (Bow a)
+loadBowCSV filePath =
+  Bow
+    . M.fromList
+    . map
+      ( \line ->
+          let [word, value] = T.splitOn "," line
+           in (Word' word, read $ T.unpack value)
+      )
+    . T.lines
+    <$> T.readFile filePath
+
+train :: IO ()
+train = do
+  putStrLn "Training HAM:"
+  ham <- freqToProb <$> bowFromFolder "./data/train/ham/"
+  dumpBowCsv ham "./data/ham.csv"
+  putStrLn "Training SPAM:"
+  spam <- freqToProb <$> bowFromFolder "./data/train/spam/"
+  dumpBowCsv spam "./data/spam.csv"
+
 main :: IO ()
-main = putStrLn "Hello, Haskell!"
+main = do
+  sm <- spamModel
+  putStrLn "Absolute HAM:"
+  classifyFolder sm "./data/validate/ham/"
+  putStrLn ""
+  putStrLn "Absolute SPAM:"
+  classifyFolder sm "./data/validate/spam/"
