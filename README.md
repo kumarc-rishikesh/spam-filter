@@ -1,5 +1,12 @@
 # Spam filtering
 
+```console
+$ cd data/
+$ ./prepare-data.sh
+$ cd ..
+$ cabal v2-repl
+```
+
 ## References
 - https://www.youtube.com/watch?v=s74qbeeBb9U&t=3856s
 - https://en.wikipedia.org/wiki/Naive_Bayes_spam_filtering
